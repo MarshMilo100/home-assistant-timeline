@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Add Light Timeline. Edit timelines from the Light Timeline sidebar panel."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Light Timeline is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "lights": "Lights",
+          "interval": "Update interval",
+          "only_when_on": "Only adjust lights that are on"
+        },
+        "data_description": {
+          "lights": "Lights shown in the timeline editor. Leave empty to show all lights.",
+          "interval": "How often fading lights are updated. Each update uses a transition of the same length.",
+          "only_when_on": "Never turn lights on; only adjust brightness and color of lights that are already on."
+        }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "schedule": {
+        "name": "Schedule"
+      }
+    }
+  }
+}

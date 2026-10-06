@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Light Timeline Testbench</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --primary-color: #03a9f4;
+        --primary-background-color: #fafafa;
+        --secondary-background-color: #eeeeee;
+        --card-background-color: #ffffff;
+        --primary-text-color: #212121;
+        --secondary-text-color: #626262;
+        --divider-color: #d5d5d5;
+        --input-fill-color: #f5f5f5;
+        --app-header-background-color: #0288d1;
+        --app-header-text-color: #ffffff;
+        --error-color: #db4437;
+        --ha-card-border-radius: 8px;
+        --ha-font-family-body: Roboto, "Helvetica Neue", sans-serif;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --primary-background-color: #171717;
+        --secondary-background-color: #292929;
+        --card-background-color: #242424;
+        --primary-text-color: #eeeeee;
+        --secondary-text-color: #bbbbbb;
+        --divider-color: #494949;
+        --input-fill-color: #303030;
+        --app-header-background-color: #242424;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: var(--ha-font-family-body); color: var(--primary-text-color); background: var(--primary-background-color); }
+      .bench { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--divider-color); }
+      .bench strong { font-size: 14px; }
+      .badge { font-size: 12px; color: var(--secondary-text-color); margin-right: auto; }
+      .bench label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+      .bench button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--divider-color); border-radius: 4px; background: var(--card-background-color); color: var(--primary-text-color); cursor: pointer; font-size: 24px; }
+      #storage-status { width: 100%; font-size: 13px; color: var(--error-color); }
+      #storage-status:empty { display: none; }
+      light-timeline-panel { display: block; height: calc(100dvh - 58px); }
+      ha-icon { display: inline-block; width: 24px; height: 24px; flex-shrink: 0; }
+      ha-menu-button { display: none; }
+      @media (max-width: 480px) {
+        light-timeline-panel { height: auto; min-height: calc(100dvh - 100px); }
+      }
+    </style>
+    <script defer src="../custom_components/light_timeline/frontend/light-timeline-panel.js"></script>
+    <script defer src="testbench.js"></script>
+  </head>
+  <body>
+    <header class="bench">
+      <strong>Testbench</strong>
+      <span class="badge">Mock lights / local saves</span>
+      <label><input id="theme" type="checkbox"> Dark theme</label>
+      <button id="reset" type="button" aria-label="Restore sample timelines" title="Restore sample timelines"><ha-icon icon="mdi:file-restore" aria-hidden="true"></ha-icon></button>
+      <span id="storage-status" role="status"></span>
+    </header>
+    <light-timeline-panel></light-timeline-panel>
+  </body>
+</html>

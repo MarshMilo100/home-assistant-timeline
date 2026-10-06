@@ -1,0 +1,12 @@
+{
+  "domain": "light_timeline",
+  "name": "Light Timeline",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "light", "panel_custom", "websocket_api"],
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

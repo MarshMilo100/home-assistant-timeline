@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "demo": "python3 -m http.server 8124 --bind 127.0.0.1"
+  },
+  "dependencies": {
+    "html-element": "^2.3.1"
+  }
+}
