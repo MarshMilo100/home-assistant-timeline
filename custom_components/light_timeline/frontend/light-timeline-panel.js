@@ -596,7 +596,7 @@ class LightTimelinePanel extends HTMLElement {
     const now = nowSeconds(this._hass.config.time_zone);
     if (this._previewIndex === 0 && now >= start && now <= end) {
       out.push(`<line class="now" x1="${x(now)}" x2="${x(now)}" y1="${T}" y2="${T + ph}"/>`,
-        `<text class="label now-label" x="${clamp(+x(now) + 4, L, L + pw - 28)}" y="${T + 26}">Now</text>`);
+        `<text class="label now-label" x="${clamp(+x(now) + 4, L, L + pw - 28)}" y="${T + ph - 6}">Now</text>`);
     }
 
     nodes.forEach((nd) => {
