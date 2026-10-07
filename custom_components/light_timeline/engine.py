@@ -42,6 +42,7 @@ from homeassistant.util.color import color_temperature_to_rgb
 
 from .const import CONF_INTERVAL, CONF_LIGHTS, CONF_ONLY_WHEN_ON, DEFAULT_INTERVAL
 from .interpolation import Node, plan, seconds_to_next_node
+from .scheduling import resolve_nodes, solar_events
 
 
 def _seconds_of_day() -> float:
@@ -65,6 +66,9 @@ class TimelineEngine:
         self._unsub_state: CALLBACK_TYPE | None = None
         self._last: dict[str, tuple[str, dict[str, Any]]] = {}
         self._contexts: dict[str, str] = {}
+        self._day = None
+        self._solar_key = None
+        self._solar_events: dict[str, int | None] = {}
 
     @property
     def lights(self) -> list[str]:
@@ -75,11 +79,19 @@ class TimelineEngine:
 
     def _active(self) -> dict[str, list[Node]]:
         lights = set(self.lights)
-        return {
-            entity_id: sched["nodes"]
-            for entity_id, sched in self.schedules.items()
-            if entity_id in lights and sched.get("enabled", True) and sched["nodes"]
-        }
+        now = dt_util.now()
+        config = self.hass.config
+        key = (now.date(), config.latitude, config.longitude, config.elevation, config.time_zone)
+        if key != self._solar_key:
+            self._solar_events = solar_events(self.hass, now.date())
+            self._solar_key = key
+        active = {}
+        for entity_id, sched in self.schedules.items():
+            if entity_id in lights and sched.get("enabled", True):
+                nodes = resolve_nodes(sched, self._solar_events, now.weekday())
+                if nodes:
+                    active[entity_id] = nodes
+        return active
 
     async def async_update_schedules(self, schedules: dict[str, dict]) -> None:
         """Replace all timelines, persist and re-apply."""
@@ -104,7 +116,7 @@ class TimelineEngine:
         self.async_stop()
         self._last.clear()
         self._unsub_state = async_track_state_change_event(
-            self.hass, list(self._active()), self._async_state_changed
+            self.hass, self.lights, self._async_state_changed
         )
         self._async_tick()
 
@@ -120,17 +132,21 @@ class TimelineEngine:
 
     @callback
     def _async_tick(self, _now: datetime | None = None) -> None:
+        today = dt_util.now().date()
+        if today != self._day:
+            self._last.clear()
+            self._day = today
         sec = _seconds_of_day()
         active = self._active()
         # Wake at the regular interval, or exactly at the next node if sooner.
-        delay = float(self.entry.options.get(CONF_INTERVAL, DEFAULT_INTERVAL))
+        delay = min(float(self.entry.options.get(CONF_INTERVAL, DEFAULT_INTERVAL)), 86400 - sec + 0.05)
         for nodes in active.values():
             delay = min(delay, seconds_to_next_node(nodes, sec) + 0.05)
         delay = max(delay, 0.5)
 
         if self.enabled:
             for entity_id, nodes in active.items():
-                self._async_apply(entity_id, nodes, sec, delay)
+                self._async_apply(entity_id, nodes, sec, min(delay, max(0, 86400 - sec - 0.05)))
         self._unsub_timer = async_call_later(self.hass, delay, self._async_tick)
 
     @callback

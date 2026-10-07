@@ -14,11 +14,17 @@ from homeassistant.helpers import config_validation as cv
 from .const import DOMAIN
 from .engine import TimelineEngine
 from .interpolation import CURVES, DAY, EASINGS
+from .scheduling import calendar
+
+DAYS_SCHEMA = vol.All([vol.All(int, vol.Range(0, 6))], vol.Length(max=7))
 
 NODE_SCHEMA = vol.Schema(
     {
         vol.Required("t"): vol.All(vol.Coerce(int), vol.Range(0, DAY - 1)),
         vol.Required("b"): vol.All(vol.Coerce(float), vol.Range(0, 100)),
+        vol.Optional("anchor", default="time"): vol.In(["time", "sunrise", "sunset"]),
+        vol.Optional("offset", default=0): vol.All(int, vol.Range(-DAY + 1, DAY - 1)),
+        vol.Optional("days", default=list(range(7))): DAYS_SCHEMA,
         vol.Optional("mode", default="none"): vol.In(["none", "ct", "rgb"]),
         vol.Optional("k", default=2700): vol.All(
             vol.Coerce(int), vol.Range(1000, 12000)
@@ -35,6 +41,7 @@ SCHEDULE_SCHEMA = vol.Schema(
     {
         vol.Optional("enabled", default=True): bool,
         vol.Optional("fade_to_warm", default=False): bool,
+        vol.Optional("days", default=list(range(7))): DAYS_SCHEMA,
         vol.Required("nodes"): vol.All([NODE_SCHEMA], vol.Length(max=1000)),
     }
 )
@@ -67,7 +74,7 @@ def ws_get(
     if (engine := _engine(hass, connection, msg)) is None:
         return
     connection.send_result(
-        msg["id"], {"lights": engine.lights, "schedules": engine.schedules}
+        msg["id"], {"lights": engine.lights, "schedules": engine.schedules, "calendar": calendar(hass)}
     )
 
 

@@ -13,9 +13,9 @@
   const defaults = {
     "light.bedroom": { enabled: true, nodes: [
       node(0, 0, { mode: "ct", k: 2200 }),
-      node(21600, 0, { mode: "ct", k: 2200 }),
+      node(21600, 0, { mode: "ct", k: 2200, anchor: "sunrise", offset: -1800 }),
       node(27000, 85, { mode: "ct", k: 5000 }),
-      node(64800, 60, { mode: "ct", k: 3000 }),
+      node(64800, 60, { mode: "ct", k: 3000, anchor: "sunset", offset: 0 }),
       node(82800, 0, { mode: "ct", k: 2200 }),
     ] },
     "light.kitchen": { enabled: true, nodes: [
