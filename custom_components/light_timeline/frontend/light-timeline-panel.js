@@ -92,17 +92,20 @@ function segment(nodes, t) {
   return [a, b, mod(t - a.t, DAY) / (mod(b.t - a.t, DAY) || DAY)];
 }
 
-function sample(nodes, t) {
+const warmKelvin = (brightness) => Math.round(1200 + 15 * brightness);
+
+function sample(nodes, t, fadeToWarm = false, temperatureRange = [1000, 12000]) {
   const [a, b, x] = segment(nodes, t);
   const e = (EASE[a.ease] || EASE.linear)(x);
   const [curve, inv] = CURVE[a.curve] || CURVE.linear;
   const p0 = inv(a.b / 100), p1 = inv(b.b / 100);
   const bri = curve(p0 + (p1 - p0) * e) * 100;
+  if (fadeToWarm) return { bri, rgb: kelvinToRgb(clamp(warmKelvin(bri), ...temperatureRange)) };
   if (!nodeColor(a)) return { bri, rgb: null };
   const end = nodeColor(b) ? b : a;
   if (a.mode === "ct" && end.mode === "ct") {
     const m0 = 1e6 / a.k, m1 = 1e6 / end.k;
-    return { bri, rgb: kelvinToRgb(1e6 / (m0 + (m1 - m0) * e)) };
+    return { bri, rgb: kelvinToRgb(clamp(1e6 / (m0 + (m1 - m0) * e), ...temperatureRange)) };
   }
   const c0 = nodeColor(a), c1 = nodeColor(end);
   return { bri, rgb: c0.map((v, i) => v + (c1[i] - v) * e) };
@@ -185,10 +188,23 @@ class LightTimelinePanel extends HTMLElement {
   }
 
   set hass(hass) {
+    const previous = this._hass;
     const first = !this._hass;
     this._hass = hass;
     if (this._menu) this._menu.hass = hass;
     if (first) this._init();
+    else {
+      for (const row of Object.values(this._rows)) {
+        const before = previous.states[row.eid]?.attributes || {};
+        const after = hass.states[row.eid]?.attributes || {};
+        if (before.min_color_temp_kelvin !== after.min_color_temp_kelvin ||
+            before.max_color_temp_kelvin !== after.max_color_temp_kelvin) {
+          this._renderEditor(row);
+          this._drawGraph(row);
+          this._renderSummary(row);
+        }
+      }
+    }
   }
 
   set narrow(narrow) {
@@ -261,15 +277,21 @@ class LightTimelinePanel extends HTMLElement {
     return this._hass.states[entityId]?.attributes.friendly_name || entityId;
   }
 
+  _temperatureRange(row) {
+    const attrs = this._hass.states[row.eid]?.attributes || {};
+    return [attrs.min_color_temp_kelvin ?? 1000, attrs.max_color_temp_kelvin ?? 12000];
+  }
+
   _buildRows(container, lights) {
     lights = [...lights].sort((a, b) => this._name(a).localeCompare(this._name(b)));
     if (!lights.length) container.textContent = "No lights found.";
     lights.forEach((eid, idx) => {
       this._schedules[eid] ??= { enabled: true, nodes: [] };
+      this._schedules[eid].fade_to_warm ??= false;
       const others = lights.filter((o) => o !== eid)
         .map((o) => `<option value="${esc(o)}">${esc(this._name(o))}</option>`).join("");
       const card = document.createElement("ha-card");
-      card.innerHTML = `<details>
+      card.innerHTML = `<details name="light-timeline">
           <summary><ha-icon icon="mdi:chevron-right"></ha-icon><span class="name"></span><span class="meta"></span><span class="mini"></span></summary>
           <div class="body">
             <svg class="graph"></svg>
@@ -277,6 +299,7 @@ class LightTimelinePanel extends HTMLElement {
             <div class="editor"></div>
             <div class="row-actions">
               <label><input type="checkbox" class="enabled"> Enabled</label>
+              <label title="1200 K at 0% brightness, 2700 K at 100%; overrides node colors"><input type="checkbox" class="fade-to-warm"> Fade to warm</label>
               <select class="copy"><option value="">Copy timeline to…</option><option value="*">All other lights</option>${others}</select>
               <button class="clear">Clear</button>
             </div>
@@ -285,7 +308,7 @@ class LightTimelinePanel extends HTMLElement {
       const $ = (sel) => card.querySelector(sel);
       const row = {
         eid, idx, details: $("details"), svg: $("svg"), editor: $(".editor"),
-        meta: $(".meta"), mini: $(".mini"), enabled: $(".enabled"),
+        meta: $(".meta"), mini: $(".mini"), enabled: $(".enabled"), fadeToWarm: $(".fade-to-warm"),
       };
       $(".name").textContent = this._name(eid);
       this._rows[eid] = row;
@@ -298,7 +321,19 @@ class LightTimelinePanel extends HTMLElement {
   _bindRow(row, copy, clear, lights) {
     const sched = this._schedules[row.eid];
     const svg = row.svg;
-    row.details.addEventListener("toggle", () => this._drawGraph(row));
+    row.details.addEventListener("toggle", () => {
+      if (!row.details.open) {
+        const focused = this.shadowRoot.activeElement;
+        if (focused && row.details.contains(focused)) focused.blur();
+        if (this._drag?.row === row) this._onUp();
+        if (this._saveTimer) {
+          clearTimeout(this._saveTimer);
+          this._saveTimer = null;
+          this._save();
+        }
+      }
+      this._drawGraph(row);
+    });
     svg.addEventListener("pointerdown", (ev) => this._onDown(row, ev));
     svg.addEventListener("pointermove", (ev) => this._onMove(ev));
     svg.addEventListener("pointerup", () => this._onUp());
@@ -323,6 +358,12 @@ class LightTimelinePanel extends HTMLElement {
       sched.enabled = row.enabled.checked;
       this._changed(row);
     });
+    row.fadeToWarm.addEventListener("change", () => {
+      sched.fade_to_warm = row.fadeToWarm.checked;
+      this._renderEditor(row);
+      this._drawGraph(row);
+      this._changed(row);
+    });
     clear.addEventListener("click", () => {
       if (!sched.nodes.length || !confirm(`Remove all nodes from ${this._name(row.eid)}?`)) return;
       sched.nodes = [];
@@ -337,6 +378,8 @@ class LightTimelinePanel extends HTMLElement {
       if (!confirm(`Replace the timeline of ${targets.length} light(s) with this one?`)) return;
       for (const eid of targets) {
         this._schedules[eid].nodes = structuredClone(sched.nodes);
+        this._schedules[eid].fade_to_warm = sched.fade_to_warm || false;
+        this._renderEditor(this._rows[eid]);
         this._drawGraph(this._rows[eid]);
         this._changed(this._rows[eid], false);
       }
@@ -383,6 +426,8 @@ class LightTimelinePanel extends HTMLElement {
     const pw = W - L - R, ph = H - T - B;
     const { start, span } = this._view, end = start + span;
     const nodes = this._schedules[row.eid].nodes;
+    const fadeToWarm = this._schedules[row.eid].fade_to_warm;
+    const temperatureRange = this._temperatureRange(row);
     const selected = this._selected?.row === row ? this._selected.node : null;
     const x = (t) => (L + ((t - start) / span) * pw).toFixed(1);
     const y = (b) => (T + (1 - b / 100) * ph).toFixed(1);
@@ -403,7 +448,7 @@ class LightTimelinePanel extends HTMLElement {
     if (nodes.length) {
       const stops = [];
       for (let i = 0; i <= 48; i++) {
-        const s = sample(nodes, mod(start + (span * i) / 48, DAY));
+        const s = sample(nodes, mod(start + (span * i) / 48, DAY), fadeToWarm, temperatureRange);
         const opacity = (0.15 + 0.6 * s.bri / 100).toFixed(2);
         const color = s.rgb ? rgbCss(s.rgb) : "var(--primary-color)";
         stops.push(`<stop offset="${i / 48}" style="stop-color:${color};stop-opacity:${opacity}"/>`);
@@ -427,7 +472,9 @@ class LightTimelinePanel extends HTMLElement {
 
     nodes.forEach((nd, i) => {
       if (nd.t < start || nd.t > end) return;
-      const c = nodeColor(nd);
+      const c = fadeToWarm || nd.mode === "ct"
+        ? kelvinToRgb(clamp(fadeToWarm ? warmKelvin(nd.b) : nd.k, ...temperatureRange))
+        : nodeColor(nd);
       out.push(`<circle class="node${nd === selected ? " selected" : ""}" data-i="${i}" cx="${x(nd.t)}" cy="${y(nd.b)}" r="7" style="fill:${c ? rgbCss(c) : "var(--card-background-color)"}"/>`);
     });
     row.svg.innerHTML = out.join("");
@@ -438,9 +485,10 @@ class LightTimelinePanel extends HTMLElement {
     const count = sched.nodes.length;
     row.meta.textContent = `${count} node${count === 1 ? "" : "s"}${sched.enabled ? "" : " · disabled"}`;
     row.enabled.checked = sched.enabled;
+    row.fadeToWarm.checked = sched.fade_to_warm || false;
     const stops = [];
     for (let i = 0; count && i <= 48; i++) {
-      const s = sample(sched.nodes, (DAY * i) / 48);
+      const s = sample(sched.nodes, (DAY * i) / 48, sched.fade_to_warm, this._temperatureRange(row));
       const pct = Math.round(15 + 0.85 * s.bri);
       stops.push(s.rgb
         ? rgbCss(s.rgb, pct / 100)
@@ -524,21 +572,22 @@ class LightTimelinePanel extends HTMLElement {
       row.editor.innerHTML = "";
       return;
     }
-    const attrs = this._hass.states[row.eid]?.attributes || {};
-    const kMin = attrs.min_color_temp_kelvin || 2000, kMax = attrs.max_color_temp_kelvin || 6500;
+    const fadeToWarm = this._schedules[row.eid].fade_to_warm;
+    const mode = fadeToWarm ? "ct" : node.mode;
+    const [kMin, kMax] = this._temperatureRange(row);
     const kGradient = `linear-gradient(to right, ${rgbCss(kelvinToRgb(kMin))}, ${rgbCss(kelvinToRgb(kMax))})`;
     row.editor.innerHTML = `
       <label>Time<input name="t" type="time" step="1"></label>
       <label>Brightness (%)<input name="b" type="number" min="0" max="100" step="1"></label>
       <label>Color<select name="mode">${options(MODE_LABELS)}</select></label>
-      ${node.mode === "ct" ? `<label>Color temperature (<span class="kval"></span> K)<input name="k" type="range" min="${kMin}" max="${kMax}" step="50" style="background:${kGradient}"></label>` : ""}
-      ${node.mode === "rgb" ? `<label>RGB color<input name="rgb" type="color"></label>` : ""}
+      ${mode === "ct" ? `<label>Color temperature (<span class="kval"></span> K)<input name="k" type="range" min="${kMin}" max="${kMax}" step="1" style="background:${kGradient}"></label>` : ""}
+      ${mode === "rgb" ? `<label>RGB color<input name="rgb" type="color"></label>` : ""}
       <label>Easing to next node<select name="ease">${options(EASE_LABELS)}</select></label>
       <label>Dimmer curve<select name="curve">${options(CURVE_LABELS)}</select></label>
       <button class="delete">Delete node</button>`;
     this._syncEditor(row);
     for (const el of row.editor.querySelectorAll("input, select")) {
-      if (el.type === "range") {
+      if (el.type === "range" || el.name === "b") {
         el.addEventListener("input", () => this._edit(row, node, el, false));
         el.addEventListener("change", () => this._changed(row));
       } else {
@@ -551,19 +600,25 @@ class LightTimelinePanel extends HTMLElement {
   _syncEditor(row) {
     const node = this._selected?.row === row ? this._selected.node : null;
     if (!node) return;
+    const fadeToWarm = this._schedules[row.eid].fade_to_warm;
+    const kelvin = clamp(fadeToWarm ? warmKelvin(node.b) : node.k, ...this._temperatureRange(row));
     const set = (name, value) => {
       const el = row.editor.querySelector(`[name="${name}"]`);
       if (el && el !== this.shadowRoot.activeElement) el.value = value;
     };
     set("t", fmt(node.t, true));
     set("b", node.b);
-    set("mode", node.mode);
-    set("k", node.k);
+    set("mode", fadeToWarm ? "ct" : node.mode);
+    set("k", kelvin);
     set("rgb", hex(node.rgb));
     set("ease", node.ease);
     set("curve", node.curve);
+    for (const name of ["mode", "k", "rgb"]) {
+      const el = row.editor.querySelector(`[name="${name}"]`);
+      if (el) el.disabled = fadeToWarm || false;
+    }
     const kval = row.editor.querySelector(".kval");
-    if (kval) kval.textContent = node.k;
+    if (kval) kval.textContent = kelvin;
   }
 
   _edit(row, node, el, record = true) {
@@ -638,7 +693,10 @@ class LightTimelinePanel extends HTMLElement {
   _scheduleSave() {
     this._status.textContent = "Saving…";
     clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => this._save(), 800);
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._save();
+    }, 800);
   }
 
   async _save() {

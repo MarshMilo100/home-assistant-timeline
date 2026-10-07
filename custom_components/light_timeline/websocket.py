@@ -34,6 +34,7 @@ NODE_SCHEMA = vol.Schema(
 SCHEDULE_SCHEMA = vol.Schema(
     {
         vol.Optional("enabled", default=True): bool,
+        vol.Optional("fade_to_warm", default=False): bool,
         vol.Required("nodes"): vol.All([NODE_SCHEMA], vol.Length(max=1000)),
     }
 )

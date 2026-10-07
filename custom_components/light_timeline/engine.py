@@ -160,7 +160,12 @@ class TimelineEngine:
         if self.entry.options.get(CONF_ONLY_WHEN_ON) and state.state != STATE_ON:
             return
 
-        target, transition = plan(nodes, sec, lookahead)
+        target, transition = plan(
+            nodes,
+            sec,
+            lookahead,
+            self.schedules[entity_id].get("fade_to_warm", False),
+        )
         data: dict[str, Any] = {}
         if target.brightness < 0.5:
             service = SERVICE_TURN_OFF
@@ -169,12 +174,15 @@ class TimelineEngine:
             modes = state.attributes.get(ATTR_SUPPORTED_COLOR_MODES) or []
             if brightness_supported(modes):
                 data[ATTR_BRIGHTNESS] = max(1, round(target.brightness * 2.55))
-            if target.kelvin and color_temp_supported(modes):
-                data[ATTR_COLOR_TEMP_KELVIN] = target.kelvin
-            elif target.kelvin and color_supported(modes):
-                data[ATTR_RGB_COLOR] = tuple(
-                    round(c) for c in color_temperature_to_rgb(target.kelvin)
-                )
+            if target.kelvin:
+                minimum = state.attributes.get("min_color_temp_kelvin", 1000)
+                maximum = state.attributes.get("max_color_temp_kelvin", 12000)
+                if color_temp_supported(modes):
+                    data[ATTR_COLOR_TEMP_KELVIN] = min(maximum, max(minimum, target.kelvin))
+                elif color_supported(modes):
+                    data[ATTR_RGB_COLOR] = tuple(
+                        round(c) for c in color_temperature_to_rgb(target.kelvin)
+                    )
             elif target.rgb and color_supported(modes):
                 data[ATTR_RGB_COLOR] = target.rgb
 

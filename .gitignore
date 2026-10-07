@@ -30,3 +30,4 @@ node_modules/indexof/index.js
 node_modules/indexof/Makefile
 node_modules/indexof/package.json
 node_modules/indexof/Readme.md
+tests/__pycache__/test_fade_to_warm.cpython-312.pyc
