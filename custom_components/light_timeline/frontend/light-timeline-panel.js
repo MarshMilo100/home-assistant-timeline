@@ -339,8 +339,11 @@ class LightTimelinePanel extends HTMLElement {
     svg.addEventListener("pointerup", () => this._onUp());
     svg.addEventListener("pointercancel", () => this._onUp());
     svg.addEventListener("dblclick", (ev) => {
-      const i = ev.target.dataset?.i;
-      if (i !== undefined) this._deleteNode(row, sched.nodes[+i]);
+      const node = this._nodeAt(row, ev);
+      if (node) {
+        ev.preventDefault();
+        this._deleteNode(row, node);
+      }
     });
     svg.addEventListener("wheel", (ev) => {
       if (!ev.ctrlKey && !ev.shiftKey) return;
@@ -508,19 +511,20 @@ class LightTimelinePanel extends HTMLElement {
     if (ev.button !== 0 || !row.geo) return;
     const nodes = this._schedules[row.eid].nodes;
     const p = this._point(row, ev);
-    const i = ev.target.dataset?.i;
-    let node;
+    let node = this._nodeAt(row, ev);
     let created = false;
-    if (i !== undefined) {
-      node = nodes[+i];
-    } else {
+    if (!node) {
       if (!p.inside) return;
       node = this._newNode(nodes, this._snapT(p.t), clamp(Math.round(p.b), 0, 100));
       nodes.push(node);
       sortNodes(nodes);
       created = true;
+      this._drawGraph(row);
     }
-    this._drag = { row, node, created, offT: node.t - p.t, offB: node.b - p.b };
+    this._drag = {
+      row, node, created, offT: node.t - p.t, offB: node.b - p.b,
+      startX: ev.clientX, startY: ev.clientY,
+    };
     row.svg.setPointerCapture(ev.pointerId);
     ev.preventDefault();
     this._select(row, node);
@@ -529,6 +533,7 @@ class LightTimelinePanel extends HTMLElement {
   _onMove(ev) {
     const d = this._drag;
     if (!d) return;
+    if (!d.moved && Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY) < 3) return;
     const p = this._point(d.row, ev);
     d.node.t = this._snapT(p.t + d.offT);
     d.node.b = clamp(Math.round(p.b + d.offB), 0, 100);
@@ -553,8 +558,31 @@ class LightTimelinePanel extends HTMLElement {
     }
     if (row) {
       this._renderEditor(row);
-      this._drawGraph(row);
+      const nodes = this._schedules[row.eid].nodes;
+      for (const circle of row.svg.querySelectorAll(".node")) {
+        circle.classList.toggle("selected", nodes[+circle.dataset.i] === node);
+      }
     }
+  }
+
+  _nodeAt(row, ev) {
+    if (!row.geo) return null;
+    const point = this._point(row, ev);
+    const { L, T, pw, ph } = row.geo;
+    const { start, span } = this._view;
+    let closest = null;
+    let distance = 10;
+    for (const node of this._schedules[row.eid].nodes) {
+      if (node.t < start || node.t > start + span) continue;
+      const x = L + ((node.t - start) / span) * pw;
+      const y = T + (1 - node.b / 100) * ph;
+      const delta = Math.hypot(point.px - x, point.py - y);
+      if (delta <= distance) {
+        closest = node;
+        distance = delta;
+      }
+    }
+    return closest;
   }
 
   _deleteNode(row, node) {
