@@ -535,7 +535,7 @@ class LightTimelinePanel extends HTMLElement {
     d.moved = true;
     sortNodes(this._schedules[d.row.eid].nodes);
     this._drawGraph(d.row);
-    this._syncEditor(d.row);
+    this._syncEditor(d.row, true);
   }
 
   _onUp() {
@@ -597,14 +597,14 @@ class LightTimelinePanel extends HTMLElement {
     row.editor.querySelector(".delete").addEventListener("click", () => this._deleteNode(row, node));
   }
 
-  _syncEditor(row) {
+  _syncEditor(row, force = false) {
     const node = this._selected?.row === row ? this._selected.node : null;
     if (!node) return;
     const fadeToWarm = this._schedules[row.eid].fade_to_warm;
     const kelvin = clamp(fadeToWarm ? warmKelvin(node.b) : node.k, ...this._temperatureRange(row));
     const set = (name, value) => {
       const el = row.editor.querySelector(`[name="${name}"]`);
-      if (el && el !== this.shadowRoot.activeElement) el.value = value;
+      if (el && (force || el !== this.shadowRoot.activeElement)) el.value = value;
     };
     set("t", fmt(node.t, true));
     set("b", node.b);
