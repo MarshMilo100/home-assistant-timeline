@@ -18,7 +18,7 @@
       node(64800, 60, { mode: "ct", k: 3000, anchor: "sunset", offset: 0 }),
       node(82800, 0, { mode: "ct", k: 2200 }),
     ] },
-    "light.kitchen": { enabled: true, nodes: [
+    "light.kitchen": { enabled: true, days: [0, 1, 2, 3, 4], nodes: [
       node(0, 0, { ease: "step" }),
       node(25200, 100, { ease: "step" }),
       node(32400, 0, { ease: "step" }),
@@ -83,7 +83,14 @@
     )),
     async callWS(message) {
       if (message.type === "light_timeline/get") {
-        return { lights: Object.keys(lights), schedules: structuredClone(schedules) };
+        const calendar = Array.from({ length: 7 }, (_, offset) => {
+          const day = new Date();
+          day.setHours(12, 0, 0, 0);
+          day.setDate(day.getDate() + offset);
+          const date = [day.getFullYear(), String(day.getMonth() + 1).padStart(2, "0"), String(day.getDate()).padStart(2, "0")].join("-");
+          return { date, weekday: (day.getDay() + 6) % 7, events: { sunrise: 25200 + offset * 60, sunset: 64800 - offset * 60 } };
+        });
+        return { lights: Object.keys(lights), schedules: structuredClone(schedules), calendar };
       }
       if (message.type === "light_timeline/save") {
         const snapshot = structuredClone(message.schedules);

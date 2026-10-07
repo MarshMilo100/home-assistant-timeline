@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from operator import itemgetter
-from typing import Any
-
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
@@ -92,9 +89,5 @@ async def ws_save(
     """Store timelines."""
     if (engine := _engine(hass, connection, msg)) is None:
         return
-    schedules: dict[str, Any] = {
-        entity_id: {**sched, "nodes": sorted(sched["nodes"], key=itemgetter("t"))}
-        for entity_id, sched in msg["schedules"].items()
-    }
-    await engine.async_update_schedules(schedules)
+    await engine.async_update_schedules(msg["schedules"])
     connection.send_result(msg["id"])

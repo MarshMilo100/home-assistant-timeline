@@ -2,6 +2,14 @@
 // Interpolation below mirrors interpolation.py; keep both in sync.
 
 const DAY = 86400;
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+const ANCHORS = { time: "Clock time", sunrise: "Sunrise", sunset: "Sunset" };
+const dayInputs = (className) => `<fieldset class="days ${className}"><legend>${className === "node-days" ? "Node days" : "Timeline days"}</legend>${WEEKDAYS.map((name, index) => `<label><input type="checkbox" data-day="${index}" aria-label="${name}">${name.slice(0, 3)}</label>`).join("")}</fieldset>`;
+const calendarDate = (timeZone) => {
+  const parts = new Intl.DateTimeFormat("en", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  return ["year", "month", "day"].map((type) => parts.find((part) => part.type === type).value).join("-");
+};
 
 const EASE = {
   linear: (t) => t,
@@ -156,6 +164,10 @@ const STYLE = `
   .label { fill: var(--secondary-text-color); font-size: 11px; }
   .curve { fill: none; stroke: var(--primary-color); stroke-width: 2; }
   .now { stroke: var(--error-color); stroke-dasharray: 4 3; }
+  .event-line { stroke: var(--secondary-text-color); stroke-dasharray: 2 4; opacity: 0.7; }
+  .days { display: flex; flex-wrap: wrap; gap: 8px; border: 0; padding: 0; margin: 12px 0; }
+  .days legend { font-size: 12px; color: var(--secondary-text-color); margin-bottom: 6px; }
+  .days label, .editor .days label { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; }
   .node { stroke: var(--primary-color); stroke-width: 2; cursor: grab; }
   .node.selected { stroke: var(--primary-text-color); stroke-width: 3; }
   .hint { font-size: 12px; color: var(--secondary-text-color); margin: 4px 0 12px; }
@@ -185,6 +197,8 @@ class LightTimelinePanel extends HTMLElement {
     this._drag = null;
     this._history = [];
     this._historyIndex = -1;
+    this._calendar = [];
+    this._previewIndex = 0;
   }
 
   set hass(hass) {
@@ -213,7 +227,10 @@ class LightTimelinePanel extends HTMLElement {
   }
 
   connectedCallback() {
-    this._timer = setInterval(() => this._drawAll(), 30000);
+    this._timer = setInterval(() => {
+      this._drawAll();
+      this._refreshCalendar();
+    }, 30000);
     this._resize = new ResizeObserver(() => this._drawAll());
     this._resize.observe(this);
   }
@@ -234,6 +251,7 @@ class LightTimelinePanel extends HTMLElement {
         <button class="history redo" type="button" aria-label="Redo" title="Redo" disabled><ha-icon icon="mdi:redo" aria-hidden="true"></ha-icon></button>
       </div>
       <div class="controls">
+        <label>Day <select class="preview-day" aria-label="Preview day"></select></label>
         <label>Zoom <select class="zoom">${ZOOMS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
         <label class="pan">Position <input class="pan-input" type="range" min="0" step="1"></label>
         <label>Snap <select class="snap">${SNAPS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
@@ -250,6 +268,14 @@ class LightTimelinePanel extends HTMLElement {
     this._redo.addEventListener("click", () => this._restoreHistory(1));
     this._zoom = root.querySelector(".zoom");
     this._pan = root.querySelector(".pan-input");
+    this._previewDay = root.querySelector(".preview-day");
+    this._previewDay.addEventListener("change", () => {
+      this._onUp();
+      this._select(null, null);
+      this._previewIndex = +this._previewDay.value;
+      this._drawAll();
+      Object.values(this._rows).forEach((row) => this._renderSummary(row));
+    });
     const snap = root.querySelector(".snap");
     snap.value = this._snap;
     snap.addEventListener("change", () => (this._snap = +snap.value));
@@ -264,6 +290,7 @@ class LightTimelinePanel extends HTMLElement {
     try {
       const data = await this._hass.callWS({ type: "light_timeline/get" });
       this._schedules = data.schedules;
+      this._setCalendar(data.calendar || []);
       this._buildRows(root.querySelector(".rows"), data.lights);
       this._recordHistory();
     } catch (err) {
@@ -282,12 +309,86 @@ class LightTimelinePanel extends HTMLElement {
     return [attrs.min_color_temp_kelvin ?? 1000, attrs.max_color_temp_kelvin ?? 12000];
   }
 
+  _day() {
+    return this._calendar[this._previewIndex] || { weekday: (new Date().getDay() + 6) % 7, events: {} };
+  }
+
+  _setCalendar(calendar) {
+    const selectedDate = this._day().date;
+    this._calendar = calendar;
+    this._previewIndex = Math.max(0, calendar.findIndex((day) => day.date === selectedDate));
+    this._previewDay.innerHTML = calendar.map((day, index) => `<option value="${index}">${WEEKDAYS[day.weekday]} ${esc(day.date)}</option>`).join("");
+    this._previewDay.value = this._previewIndex;
+  }
+
+  async _refreshCalendar() {
+    if (!this._hass || !this._calendar.length || this._refreshingCalendar ||
+        this._calendar[0].date === calendarDate(this._hass.config.time_zone)) return;
+    this._refreshingCalendar = true;
+    try {
+      const data = await this._hass.callWS({ type: "light_timeline/get" });
+      this._setCalendar(data.calendar || []);
+      this._select(null, null);
+      this._drawAll();
+      Object.values(this._rows).forEach((row) => this._renderSummary(row));
+    } catch (error) {
+      this._status.textContent = `Calendar unavailable: ${error.message}`;
+    } finally {
+      this._refreshingCalendar = false;
+    }
+  }
+
+  _nodeTime(node) {
+    if (!node.anchor || node.anchor === "time") return node.t;
+    const event = this._day().events[node.anchor];
+    return event == null ? null : mod(event + (node.offset || 0), DAY);
+  }
+
+  _nodesFor(row) {
+    const schedule = this._schedules[row.eid];
+    const weekday = this._day().weekday;
+    if (!schedule.days.includes(weekday)) return [];
+    const resolved = new Map();
+    for (const node of schedule.nodes) {
+      const time = this._nodeTime(node);
+      if (time == null || !node.days.includes(weekday)) continue;
+      resolved.set(time, { ...node, t: time, source: node });
+    }
+    return [...resolved.values()].sort((left, right) => left.t - right.t);
+  }
+
+  _snapPoint(row, time) {
+    const events = Object.entries(this._day().events).filter(([, seconds]) => seconds != null);
+    events.sort((left, right) => Math.abs(left[1] - time) - Math.abs(right[1] - time));
+    if (events.length && Math.abs(events[0][1] - time) * row.geo.pw / this._view.span <= 8) {
+      return { t: events[0][1], anchor: events[0][0], offset: 0 };
+    }
+    return { t: this._snapT(time), anchor: "time", offset: 0 };
+  }
+
+  _moveNode(row, node, time) {
+    const snapped = this._snapPoint(row, time);
+    if (snapped.anchor !== "time") Object.assign(node, snapped);
+    else {
+      node.t = snapped.t;
+      if (node.anchor !== "time" && this._day().events[node.anchor] != null) {
+        node.offset = snapped.t - this._day().events[node.anchor];
+      }
+    }
+  }
+
   _buildRows(container, lights) {
     lights = [...lights].sort((a, b) => this._name(a).localeCompare(this._name(b)));
     if (!lights.length) container.textContent = "No lights found.";
     lights.forEach((eid, idx) => {
       this._schedules[eid] ??= { enabled: true, nodes: [] };
       this._schedules[eid].fade_to_warm ??= false;
+      this._schedules[eid].days ??= [...ALL_DAYS];
+      for (const node of this._schedules[eid].nodes) {
+        node.anchor ??= "time";
+        node.offset ??= 0;
+        node.days ??= [...ALL_DAYS];
+      }
       const others = lights.filter((o) => o !== eid)
         .map((o) => `<option value="${esc(o)}">${esc(this._name(o))}</option>`).join("");
       const card = document.createElement("ha-card");
@@ -297,7 +398,9 @@ class LightTimelinePanel extends HTMLElement {
             <svg class="graph"></svg>
             <div class="hint">Click to add a node, drag to move, double-click to delete. Ctrl + scroll to zoom, Shift + scroll to pan.</div>
             <div class="editor"></div>
+            ${dayInputs("timeline-days")}
             <div class="row-actions">
+              <label>Node <select class="node-picker" aria-label="Select node"></select></label>
               <label><input type="checkbox" class="enabled"> Enabled</label>
               <label title="Automatically ties color temperature to brightness to mimic incandescent dimming: 1000 K at 0% brightness, 2700 K at 100%; overrides node colors"><input type="checkbox" class="fade-to-warm"> Fade to warm</label>
               <select class="copy"><option value="">Copy timeline to…</option><option value="*">All other lights</option>${others}</select>
@@ -308,7 +411,7 @@ class LightTimelinePanel extends HTMLElement {
       const $ = (sel) => card.querySelector(sel);
       const row = {
         eid, idx, details: $("details"), svg: $("svg"), editor: $(".editor"),
-        meta: $(".meta"), mini: $(".mini"), enabled: $(".enabled"), fadeToWarm: $(".fade-to-warm"),
+        meta: $(".meta"), mini: $(".mini"), enabled: $(".enabled"), fadeToWarm: $(".fade-to-warm"), nodePicker: $(".node-picker"),
       };
       $(".name").textContent = this._name(eid);
       this._rows[eid] = row;
@@ -321,6 +424,10 @@ class LightTimelinePanel extends HTMLElement {
   _bindRow(row, copy, clear, lights) {
     const sched = this._schedules[row.eid];
     const svg = row.svg;
+    row.nodePicker.addEventListener("change", () => {
+      const node = row.nodePicker.value === "" ? null : sched.nodes[+row.nodePicker.value];
+      this._select(node ? row : null, node);
+    });
     row.details.addEventListener("toggle", () => {
       if (!row.details.open) {
         const focused = this.shadowRoot.activeElement;
@@ -367,6 +474,13 @@ class LightTimelinePanel extends HTMLElement {
       this._drawGraph(row);
       this._changed(row);
     });
+    for (const checkbox of row.details.querySelectorAll(".timeline-days input")) {
+      checkbox.addEventListener("change", () => {
+        sched.days = [...row.details.querySelectorAll(".timeline-days input:checked")].map((el) => +el.dataset.day);
+        this._drawGraph(row);
+        this._changed(row);
+      });
+    }
     clear.addEventListener("click", () => {
       if (!sched.nodes.length || !confirm(`Remove all nodes from ${this._name(row.eid)}?`)) return;
       sched.nodes = [];
@@ -382,6 +496,7 @@ class LightTimelinePanel extends HTMLElement {
       for (const eid of targets) {
         this._schedules[eid].nodes = structuredClone(sched.nodes);
         this._schedules[eid].fade_to_warm = sched.fade_to_warm || false;
+        this._schedules[eid].days = [...sched.days];
         this._renderEditor(this._rows[eid]);
         this._drawGraph(this._rows[eid]);
         this._changed(this._rows[eid], false);
@@ -428,7 +543,7 @@ class LightTimelinePanel extends HTMLElement {
     const H = 200, L = 40, R = 12, T = 12, B = 24;
     const pw = W - L - R, ph = H - T - B;
     const { start, span } = this._view, end = start + span;
-    const nodes = this._schedules[row.eid].nodes;
+    const nodes = this._nodesFor(row);
     const fadeToWarm = this._schedules[row.eid].fade_to_warm;
     const temperatureRange = this._temperatureRange(row);
     const selected = this._selected?.row === row ? this._selected.node : null;
@@ -447,6 +562,11 @@ class LightTimelinePanel extends HTMLElement {
         `<text class="label" x="${x(t)}" y="${H - 6}" text-anchor="middle">${fmt(t, step < 60)}</text>`);
     }
     out.push(`<rect class="plot" x="${L}" y="${T}" width="${pw}" height="${ph}"/>`);
+    for (const [event, time] of Object.entries(this._day().events)) {
+      if (time == null || time < start || time > end) continue;
+      out.push(`<line class="event-line" x1="${x(time)}" x2="${x(time)}" y1="${T}" y2="${T + ph}"/>`,
+        `<text class="label" x="${clamp(+x(time) + 4, L, L + pw - 50)}" y="${T + 12}">${ANCHORS[event]}</text>`);
+    }
 
     if (nodes.length) {
       const stops = [];
@@ -469,42 +589,49 @@ class LightTimelinePanel extends HTMLElement {
     }
 
     const now = nowSeconds(this._hass.config.time_zone);
-    if (now >= start && now <= end) {
+    if (this._previewIndex === 0 && now >= start && now <= end) {
       out.push(`<line class="now" x1="${x(now)}" x2="${x(now)}" y1="${T}" y2="${T + ph}"/>`);
     }
 
-    nodes.forEach((nd, i) => {
+    nodes.forEach((nd) => {
       if (nd.t < start || nd.t > end) return;
+      const i = this._schedules[row.eid].nodes.indexOf(nd.source);
       const c = fadeToWarm || nd.mode === "ct"
         ? kelvinToRgb(clamp(fadeToWarm ? warmKelvin(nd.b) : nd.k, ...temperatureRange))
         : nodeColor(nd);
-      out.push(`<circle class="node${nd === selected ? " selected" : ""}" data-i="${i}" cx="${x(nd.t)}" cy="${y(nd.b)}" r="7" style="fill:${c ? rgbCss(c) : "var(--card-background-color)"}"/>`);
+      out.push(`<circle class="node${nd.source === selected ? " selected" : ""}" data-i="${i}" cx="${x(nd.t)}" cy="${y(nd.b)}" r="7" style="fill:${c ? rgbCss(c) : "var(--card-background-color)"}"/>`);
     });
     row.svg.innerHTML = out.join("");
   }
 
   _renderSummary(row) {
     const sched = this._schedules[row.eid];
+    const nodes = this._nodesFor(row);
     const count = sched.nodes.length;
-    row.meta.textContent = `${count} node${count === 1 ? "" : "s"}${sched.enabled ? "" : " · disabled"}`;
+    row.meta.textContent = `${count} node${count === 1 ? "" : "s"}${sched.enabled ? "" : " · disabled"}${sched.days.includes(this._day().weekday) ? "" : " · inactive on this day"}`;
+    row.nodePicker.innerHTML = `<option value="">--</option>${sched.nodes.map((node, index) => `<option value="${index}">${index + 1}: ${node.anchor === "time" ? fmt(node.t, true) : ANCHORS[node.anchor]}</option>`).join("")}`;
+    row.nodePicker.value = this._selected?.row === row ? sched.nodes.indexOf(this._selected.node) : "";
     row.enabled.checked = sched.enabled;
     row.fadeToWarm.checked = sched.fade_to_warm || false;
+    for (const checkbox of row.details.querySelectorAll(".timeline-days input")) {
+      checkbox.checked = sched.days.includes(+checkbox.dataset.day);
+    }
     const stops = [];
-    for (let i = 0; count && i <= 48; i++) {
-      const s = sample(sched.nodes, (DAY * i) / 48, sched.fade_to_warm, this._temperatureRange(row));
+    for (let i = 0; nodes.length && i <= 48; i++) {
+      const s = sample(nodes, (DAY * i) / 48, sched.fade_to_warm, this._temperatureRange(row));
       const pct = Math.round(15 + 0.85 * s.bri);
       stops.push(s.rgb
         ? rgbCss(s.rgb, pct / 100)
         : `color-mix(in srgb, var(--primary-color) ${pct}%, transparent)`);
     }
-    row.mini.style.background = count ? `linear-gradient(to right, ${stops.join(",")})` : "";
+    row.mini.style.background = nodes.length ? `linear-gradient(to right, ${stops.join(",")})` : "";
   }
 
   _newNode(nodes, t, b) {
     const base = nodes.length
       ? segment(nodes, t)[0]
       : { mode: "none", k: 2700, rgb: [255, 255, 255], ease: "linear", curve: "linear" };
-    return { t, b, mode: base.mode, k: base.k, rgb: [...base.rgb], ease: base.ease, curve: base.curve };
+    return { t, b, anchor: "time", offset: 0, days: [...ALL_DAYS], mode: base.mode, k: base.k, rgb: [...base.rgb], ease: base.ease, curve: base.curve };
   }
 
   _onDown(row, ev) {
@@ -515,14 +642,16 @@ class LightTimelinePanel extends HTMLElement {
     let created = false;
     if (!node) {
       if (!p.inside) return;
-      node = this._newNode(nodes, this._snapT(p.t), clamp(Math.round(p.b), 0, 100));
+      const snapped = this._snapPoint(row, p.t);
+      node = this._newNode(this._nodesFor(row), snapped.t, clamp(Math.round(p.b), 0, 100));
+      Object.assign(node, snapped);
       nodes.push(node);
       sortNodes(nodes);
       created = true;
       this._drawGraph(row);
     }
     this._drag = {
-      row, node, created, offT: node.t - p.t, offB: node.b - p.b,
+      row, node, created, offT: this._nodeTime(node) - p.t, offB: node.b - p.b,
       startX: ev.clientX, startY: ev.clientY,
     };
     row.svg.setPointerCapture(ev.pointerId);
@@ -535,7 +664,7 @@ class LightTimelinePanel extends HTMLElement {
     if (!d) return;
     if (!d.moved && Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY) < 3) return;
     const p = this._point(d.row, ev);
-    d.node.t = this._snapT(p.t + d.offT);
+    this._moveNode(d.row, d.node, p.t + d.offT);
     d.node.b = clamp(Math.round(p.b + d.offB), 0, 100);
     d.moved = true;
     sortNodes(this._schedules[d.row.eid].nodes);
@@ -553,10 +682,12 @@ class LightTimelinePanel extends HTMLElement {
     const prev = this._selected?.row;
     this._selected = row ? { row, node } : null;
     if (prev && prev !== row) {
+      prev.nodePicker.value = "";
       this._renderEditor(prev);
       this._drawGraph(prev);
     }
     if (row) {
+      row.nodePicker.value = this._schedules[row.eid].nodes.indexOf(node);
       this._renderEditor(row);
       const nodes = this._schedules[row.eid].nodes;
       for (const circle of row.svg.querySelectorAll(".node")) {
@@ -572,13 +703,13 @@ class LightTimelinePanel extends HTMLElement {
     const { start, span } = this._view;
     let closest = null;
     let distance = 10;
-    for (const node of this._schedules[row.eid].nodes) {
+    for (const node of this._nodesFor(row)) {
       if (node.t < start || node.t > start + span) continue;
       const x = L + ((node.t - start) / span) * pw;
       const y = T + (1 - node.b / 100) * ph;
       const delta = Math.hypot(point.px - x, point.py - y);
       if (delta <= distance) {
-        closest = node;
+        closest = node.source;
         distance = delta;
       }
     }
@@ -605,16 +736,27 @@ class LightTimelinePanel extends HTMLElement {
     const [kMin, kMax] = this._temperatureRange(row);
     const kGradient = `linear-gradient(to right, ${rgbCss(kelvinToRgb(kMin))}, ${rgbCss(kelvinToRgb(kMax))})`;
     row.editor.innerHTML = `
+      <label>Timing<select name="anchor">${Object.entries(ANCHORS).map(([value, label]) => `<option value="${value}"${value !== "time" && this._day().events[value] == null ? " disabled" : ""}>${label}${value !== "time" && this._day().events[value] == null ? " (unavailable)" : ""}</option>`).join("")}</select></label>
       <label>Time<input name="t" type="time" step="1"></label>
+      ${node.anchor !== "time" ? '<label>Offset (min)<input name="offset" type="number" min="-1439.98" max="1439.98" step="any"></label>' : ""}
       <label>Brightness (%)<input name="b" type="number" min="0" max="100" step="1"></label>
       <label>Color<select name="mode">${options(MODE_LABELS)}</select></label>
       ${mode === "ct" ? `<label>Color temperature (<span class="kval"></span> K)<input name="k" type="range" min="${kMin}" max="${kMax}" step="1" style="background:${kGradient}"></label>` : ""}
       ${mode === "rgb" ? `<label>RGB color<input name="rgb" type="color"></label>` : ""}
       <label>Easing to next node<select name="ease">${options(EASE_LABELS)}</select></label>
       <label>Dimmer curve<select name="curve">${options(CURVE_LABELS)}</select></label>
+      ${dayInputs("node-days")}
       <button class="delete">Delete node</button>`;
     this._syncEditor(row);
     for (const el of row.editor.querySelectorAll("input, select")) {
+      if (el.type === "checkbox") {
+        el.addEventListener("change", () => {
+          node.days = [...row.editor.querySelectorAll(".node-days input:checked")].map((checkbox) => +checkbox.dataset.day);
+          this._drawGraph(row);
+          this._changed(row);
+        });
+        continue;
+      }
       if (el.type === "range" || el.name === "b") {
         el.addEventListener("input", () => this._edit(row, node, el, false));
         el.addEventListener("change", () => this._changed(row));
@@ -634,7 +776,14 @@ class LightTimelinePanel extends HTMLElement {
       const el = row.editor.querySelector(`[name="${name}"]`);
       if (el && (force || el !== this.shadowRoot.activeElement)) el.value = value;
     };
-    set("t", fmt(node.t, true));
+    const nodeTime = this._nodeTime(node);
+    set("t", nodeTime == null ? "" : fmt(nodeTime, true));
+    set("anchor", node.anchor);
+    set("offset", node.offset / 60);
+    row.editor.querySelector('[name="t"]').disabled = node.anchor !== "time";
+    for (const checkbox of row.editor.querySelectorAll(".node-days input")) {
+      checkbox.checked = node.days.includes(+checkbox.dataset.day);
+    }
     set("b", node.b);
     set("mode", fadeToWarm ? "ct" : node.mode);
     set("k", kelvin);
@@ -652,6 +801,17 @@ class LightTimelinePanel extends HTMLElement {
   _edit(row, node, el, record = true) {
     const v = el.value;
     switch (el.name) {
+      case "anchor": {
+        const time = this._nodeTime(node) ?? node.t;
+        node.anchor = v;
+        node.offset = 0;
+        node.t = v === "time" ? time : this._day().events[v] ?? time;
+        this._renderEditor(row);
+        break;
+      }
+      case "offset":
+        node.offset = clamp(Math.round((+v || 0) * 60), -DAY + 1, DAY - 1);
+        break;
       case "t":
         if (!v) return;
         node.t = clamp(parseTime(v), 0, DAY - 1);
