@@ -164,6 +164,7 @@ const STYLE = `
   .label { fill: var(--secondary-text-color); font-size: 11px; }
   .curve { fill: none; stroke: var(--primary-color); stroke-width: 2; }
   .now { stroke: var(--error-color); stroke-dasharray: 4 3; }
+  .now-label { fill: var(--error-color); }
   .event-line { stroke: var(--secondary-text-color); stroke-dasharray: 2 4; opacity: 0.7; }
   .days { display: flex; flex-wrap: wrap; gap: 8px; border: 0; padding: 0; margin: 12px 0; }
   .days legend { font-size: 12px; color: var(--secondary-text-color); margin-bottom: 6px; }
@@ -366,9 +367,11 @@ class LightTimelinePanel extends HTMLElement {
     return { t: this._snapT(time), anchor: "time", offset: 0 };
   }
 
-  _moveNode(row, node, time) {
-    const snapped = this._snapPoint(row, time);
-    if (snapped.anchor !== "time") Object.assign(node, snapped);
+  _moveNode(row, node, time, freeform = false) {
+    const snapped = this._snapPoint(row, time, freeform);
+    if (snapped.anchor !== "time") {
+      Object.assign(node, snapped, { anchor: snapped.anchor === "now" ? "time" : snapped.anchor });
+    }
     else {
       node.t = snapped.t;
       if (node.anchor !== "time" && this._day().events[node.anchor] != null) {
@@ -590,7 +593,8 @@ class LightTimelinePanel extends HTMLElement {
 
     const now = nowSeconds(this._hass.config.time_zone);
     if (this._previewIndex === 0 && now >= start && now <= end) {
-      out.push(`<line class="now" x1="${x(now)}" x2="${x(now)}" y1="${T}" y2="${T + ph}"/>`);
+      out.push(`<line class="now" x1="${x(now)}" x2="${x(now)}" y1="${T}" y2="${T + ph}"/>`,
+        `<text class="label now-label" x="${clamp(+x(now) + 4, L, L + pw - 28)}" y="${T + 26}">Now</text>`);
     }
 
     nodes.forEach((nd) => {
@@ -644,7 +648,7 @@ class LightTimelinePanel extends HTMLElement {
       if (!p.inside) return;
       const snapped = this._snapPoint(row, p.t);
       node = this._newNode(this._nodesFor(row), snapped.t, clamp(Math.round(p.b), 0, 100));
-      Object.assign(node, snapped);
+      Object.assign(node, snapped, { anchor: snapped.anchor === "now" ? "time" : snapped.anchor });
       nodes.push(node);
       sortNodes(nodes);
       created = true;
