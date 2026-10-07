@@ -12,7 +12,7 @@ from homeassistant.util.color import color_temperature_to_rgb
 
 class FadeToWarmTests(unittest.TestCase):
     def test_brightness_endpoints_and_midpoint(self):
-        for brightness, kelvin in [(0, 1200), (50, 1950), (100, 2700)]:
+        for brightness, kelvin in [(0, 1000), (50, 1850), (100, 2700)]:
             with self.subTest(brightness=brightness):
                 nodes = [NODE_SCHEMA({"t": 0, "b": brightness})]
                 target = target_at(nodes, 0, True)
@@ -27,12 +27,12 @@ class FadeToWarmTests(unittest.TestCase):
         ]
         target = target_at(nodes, 1800, True)
         self.assertAlmostEqual(target.brightness, 6.25)
-        self.assertEqual(target.kelvin, math.floor(1200 + 15 * 6.25 + 0.5))
+        self.assertEqual(target.kelvin, math.floor(1000 + 17 * 6.25 + 0.5))
 
     def test_overrides_color_without_modifying_nodes(self):
         nodes = [NODE_SCHEMA({"t": 0, "b": 50, "mode": "rgb", "rgb": [0, 0, 255]})]
         self.assertEqual(target_at(nodes, 0).rgb, (0, 0, 255))
-        self.assertEqual(target_at(nodes, 0, True).kelvin, 1950)
+        self.assertEqual(target_at(nodes, 0, True).kelvin, 1850)
         self.assertEqual(target_at(nodes, 0).rgb, (0, 0, 255))
         self.assertEqual(nodes[0]["rgb"], [0, 0, 255])
 
@@ -48,7 +48,7 @@ class FadeToWarmTests(unittest.TestCase):
             NODE_SCHEMA({"t": 60, "b": 100}),
         ]
         target, transition = plan(nodes, 30, 15, True)
-        self.assertEqual(target.kelvin, 1950)
+        self.assertEqual(target.kelvin, 1850)
         self.assertEqual(transition, 0)
 
     def test_schedule_default_and_persistence_field(self):
@@ -62,7 +62,7 @@ class FadeToWarmServiceTests(unittest.IsolatedAsyncioTestCase):
             (["color_temp"], 50, 6500, {"color_temp_kelvin": 2000}),
             (["color_temp"], 100, 6500, {"color_temp_kelvin": 2700}),
             (["color_temp"], 100, 2400, {"color_temp_kelvin": 2400}),
-            (["rgb"], 50, 6500, {"rgb_color": tuple(round(channel) for channel in color_temperature_to_rgb(1950))}),
+            (["rgb"], 50, 6500, {"rgb_color": tuple(round(channel) for channel in color_temperature_to_rgb(1850))}),
             (["rgb", "color_temp"], 50, 6500, {"color_temp_kelvin": 2000}),
             (["brightness"], 50, 6500, {}),
             (["color_temp"], 0, 6500, {}),

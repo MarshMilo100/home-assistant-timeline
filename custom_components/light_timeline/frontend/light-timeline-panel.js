@@ -92,7 +92,7 @@ function segment(nodes, t) {
   return [a, b, mod(t - a.t, DAY) / (mod(b.t - a.t, DAY) || DAY)];
 }
 
-const warmKelvin = (brightness) => Math.round(1200 + 15 * brightness);
+const warmKelvin = (brightness) => Math.round(1000 + 17 * brightness);
 
 function sample(nodes, t, fadeToWarm = false, temperatureRange = [1000, 12000]) {
   const [a, b, x] = segment(nodes, t);
@@ -299,7 +299,7 @@ class LightTimelinePanel extends HTMLElement {
             <div class="editor"></div>
             <div class="row-actions">
               <label><input type="checkbox" class="enabled"> Enabled</label>
-              <label title="1200 K at 0% brightness, 2700 K at 100%; overrides node colors"><input type="checkbox" class="fade-to-warm"> Fade to warm</label>
+              <label title="1000 K at 0% brightness, 2700 K at 100%; overrides node colors"><input type="checkbox" class="fade-to-warm"> Fade to warm</label>
               <select class="copy"><option value="">Copy timeline to…</option><option value="*">All other lights</option>${others}</select>
               <button class="clear">Clear</button>
             </div>

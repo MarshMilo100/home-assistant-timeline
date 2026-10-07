@@ -89,7 +89,7 @@ def target_at(nodes: list[Node], t: float, fade_to_warm: bool = False) -> Target
     target = Target(curve(p0 + (p1 - p0) * e) * 100)
 
     if fade_to_warm:
-        target.kelvin = math.floor(1200 + 15 * target.brightness + 0.5)
+        target.kelvin = math.floor(1000 + 17 * target.brightness + 0.5)
         return target
 
     start = _color(a)

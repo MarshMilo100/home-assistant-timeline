@@ -5,7 +5,7 @@
     ease: "sine", curve: "cie", ...properties,
   });
   const lights = {
-    "light.bedroom": { friendly_name: "Bedroom", supported_color_modes: ["color_temp"], min_color_temp_kelvin: 2000, max_color_temp_kelvin: 6500 },
+    "light.bedroom": { friendly_name: "Bedroom", supported_color_modes: ["color_temp"], min_color_temp_kelvin: 1000, max_color_temp_kelvin: 6500 },
     "light.kitchen": { friendly_name: "Kitchen", supported_color_modes: ["brightness"] },
     "light.living_room": { friendly_name: "Living room", supported_color_modes: ["rgb", "color_temp"], min_color_temp_kelvin: 2200, max_color_temp_kelvin: 6500 },
     "light.studio": { friendly_name: "Studio accents", supported_color_modes: ["rgb"] },
