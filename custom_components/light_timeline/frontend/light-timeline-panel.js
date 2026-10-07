@@ -56,7 +56,9 @@ const ZOOMS = [
   [86400, "24 h"], [43200, "12 h"], [21600, "6 h"], [10800, "3 h"], [3600, "1 h"],
   [1800, "30 min"], [900, "15 min"], [300, "5 min"], [60, "1 min"],
 ];
-const SNAPS = [[1, "1 s"], [5, "5 s"], [15, "15 s"], [60, "1 min"], [300, "5 min"], [900, "15 min"]];
+const SNAPS = [[1, "1 s"], [5, "5 s"], [15, "15 s"], [60, "1 min"], [300, "5 min"], [900, "15 min"], [1800, "30 min"], [3600, "1 h"]];
+const BRIGHTNESS_SNAPS = [1, 5, 10, 20, 25];
+const SNAP_PREFERENCES_KEY = "light-timeline-snap-preferences-v1";
 const TICKS = [1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
 
 const mod = (x, m) => ((x % m) + m) % m;
@@ -192,7 +194,8 @@ class LightTimelinePanel extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._view = { start: 0, span: DAY };
-    this._snap = 60;
+    this._snap = 900;
+    this._brightnessSnap = 5;
     this._rows = {};
     this._selected = null;
     this._drag = null;
@@ -242,6 +245,8 @@ class LightTimelinePanel extends HTMLElement {
   }
 
   async _init() {
+    this._snapPreferencesKey = `${SNAP_PREFERENCES_KEY}:${this._hass.user?.id || "demo"}`;
+    this._loadSnapPreferences();
     const root = this.shadowRoot;
     root.innerHTML = `<style>${STYLE}</style>
       <div class="toolbar">
@@ -255,7 +260,8 @@ class LightTimelinePanel extends HTMLElement {
         <label>Day <select class="preview-day" aria-label="Preview day"></select></label>
         <label>Zoom <select class="zoom">${ZOOMS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
         <label class="pan">Position <input class="pan-input" type="range" min="0" step="1"></label>
-        <label>Snap <select class="snap">${SNAPS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
+        <label>Time snap <select class="snap">${SNAPS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
+        <label>Brightness snap <select class="brightness-snap">${BRIGHTNESS_SNAPS.map((value) => `<option value="${value}">${value}%</option>`).join("")}</select></label>
         <span class="tz"></span>
       </div>
       <div class="rows"></div>`;
@@ -279,7 +285,16 @@ class LightTimelinePanel extends HTMLElement {
     });
     const snap = root.querySelector(".snap");
     snap.value = this._snap;
-    snap.addEventListener("change", () => (this._snap = +snap.value));
+    snap.addEventListener("change", () => {
+      this._snap = +snap.value;
+      this._saveSnapPreferences();
+    });
+    const brightnessSnap = root.querySelector(".brightness-snap");
+    brightnessSnap.value = this._brightnessSnap;
+    brightnessSnap.addEventListener("change", () => {
+      this._brightnessSnap = +brightnessSnap.value;
+      this._saveSnapPreferences();
+    });
     this._zoom.addEventListener("change", () => {
       const { start, span } = this._view;
       const next = +this._zoom.value;
@@ -299,6 +314,20 @@ class LightTimelinePanel extends HTMLElement {
       return;
     }
     this._setView(0, DAY);
+  }
+
+  _loadSnapPreferences() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(this._snapPreferencesKey) || "null");
+      if (SNAPS.some(([value]) => value === saved?.time)) this._snap = saved.time;
+      if (BRIGHTNESS_SNAPS.includes(saved?.brightness)) this._brightnessSnap = saved.brightness;
+    } catch {}
+  }
+
+  _saveSnapPreferences() {
+    try {
+      localStorage.setItem(this._snapPreferencesKey, JSON.stringify({ time: this._snap, brightness: this._brightnessSnap }));
+    } catch {}
   }
 
   _name(entityId) {
@@ -541,6 +570,11 @@ class LightTimelinePanel extends HTMLElement {
     return clamp(Math.round(t / this._snap) * this._snap, 0, DAY - 1);
   }
 
+  _snapBrightness(brightness, freeform = false) {
+    const step = freeform ? 1 : this._brightnessSnap;
+    return clamp(Math.round(brightness / step) * step, 0, 100);
+  }
+
   _drawGraph(row) {
     if (!row?.details.open) return;
     const W = row.svg.clientWidth;
@@ -649,7 +683,7 @@ class LightTimelinePanel extends HTMLElement {
     if (!node) {
       if (!p.inside) return;
       const snapped = this._snapPoint(row, p.t, ev.shiftKey);
-      node = this._newNode(this._nodesFor(row), snapped.t, clamp(Math.round(p.b), 0, 100));
+      node = this._newNode(this._nodesFor(row), snapped.t, this._snapBrightness(p.b, ev.shiftKey));
       Object.assign(node, snapped, { anchor: snapped.anchor === "now" ? "time" : snapped.anchor });
       nodes.push(node);
       sortNodes(nodes);
@@ -671,7 +705,7 @@ class LightTimelinePanel extends HTMLElement {
     if (!d.moved && Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY) < 3) return;
     const p = this._point(d.row, ev);
     this._moveNode(d.row, d.node, p.t + d.offT, ev.shiftKey);
-    d.node.b = clamp(Math.round(p.b + d.offB), 0, 100);
+    d.node.b = this._snapBrightness(p.b + d.offB, ev.shiftKey);
     d.moved = true;
     sortNodes(this._schedules[d.row.eid].nodes);
     this._drawGraph(d.row);
