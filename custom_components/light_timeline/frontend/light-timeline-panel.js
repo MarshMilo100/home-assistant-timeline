@@ -358,8 +358,10 @@ class LightTimelinePanel extends HTMLElement {
     return [...resolved.values()].sort((left, right) => left.t - right.t);
   }
 
-  _snapPoint(row, time) {
+  _snapPoint(row, time, freeform = false) {
+    if (freeform) return { t: clamp(Math.round(time), 0, DAY - 1), anchor: "time", offset: 0 };
     const events = Object.entries(this._day().events).filter(([, seconds]) => seconds != null);
+    if (this._previewIndex === 0) events.push(["now", nowSeconds(this._hass.config.time_zone)]);
     events.sort((left, right) => Math.abs(left[1] - time) - Math.abs(right[1] - time));
     if (events.length && Math.abs(events[0][1] - time) * row.geo.pw / this._view.span <= 8) {
       return { t: events[0][1], anchor: events[0][0], offset: 0 };
@@ -646,7 +648,7 @@ class LightTimelinePanel extends HTMLElement {
     let created = false;
     if (!node) {
       if (!p.inside) return;
-      const snapped = this._snapPoint(row, p.t);
+      const snapped = this._snapPoint(row, p.t, ev.shiftKey);
       node = this._newNode(this._nodesFor(row), snapped.t, clamp(Math.round(p.b), 0, 100));
       Object.assign(node, snapped, { anchor: snapped.anchor === "now" ? "time" : snapped.anchor });
       nodes.push(node);
@@ -668,7 +670,7 @@ class LightTimelinePanel extends HTMLElement {
     if (!d) return;
     if (!d.moved && Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY) < 3) return;
     const p = this._point(d.row, ev);
-    this._moveNode(d.row, d.node, p.t + d.offT);
+    this._moveNode(d.row, d.node, p.t + d.offT, ev.shiftKey);
     d.node.b = clamp(Math.round(p.b + d.offB), 0, 100);
     d.moved = true;
     sortNodes(this._schedules[d.row.eid].nodes);
