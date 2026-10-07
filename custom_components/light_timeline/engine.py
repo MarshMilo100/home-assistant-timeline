@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.light import (
@@ -22,7 +24,9 @@ from homeassistant.const import (
     SERVICE_TURN_OFF,
     SERVICE_TURN_ON,
     STATE_ON,
+    STATE_OFF,
     STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
 )
 from homeassistant.core import (
     CALLBACK_TYPE,
@@ -40,14 +44,36 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.util.color import color_temperature_to_rgb
 
-from .const import CONF_INTERVAL, CONF_LIGHTS, CONF_ONLY_WHEN_ON, DEFAULT_INTERVAL
-from .interpolation import Node, plan, seconds_to_next_node
+from .const import CONF_INTERVAL, CONF_LIGHTS, CONF_ONLY_WHEN_ON, DEFAULT_INTERVAL, DEFAULT_RESUME_TRANSITION
+from .interpolation import Node, plan, seconds_to_next_node, target_at
 from .scheduling import resolve_nodes, solar_events
 
 
 def _seconds_of_day() -> float:
     now = dt_util.now()
     return now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1e6
+
+
+@dataclass
+class ManualOverride:
+    deadline: float
+    destination: Node
+    ease: str
+    curve: str
+    started: float | None = None
+    nodes: list[Node] | None = None
+    following: float | None = None
+
+
+def _state_node(state) -> Node:
+    attrs = state.attributes
+    node = {"t": 0, "b": attrs.get(ATTR_BRIGHTNESS, 255) / 2.55 if state.state == STATE_ON else 0, "mode": "none"}
+    mode = attrs.get("color_mode")
+    if attrs.get(ATTR_COLOR_TEMP_KELVIN) and (mode == "color_temp" or not attrs.get(ATTR_RGB_COLOR)):
+        node.update(mode="ct", k=attrs[ATTR_COLOR_TEMP_KELVIN])
+    elif attrs.get(ATTR_RGB_COLOR):
+        node.update(mode="rgb", rgb=list(attrs[ATTR_RGB_COLOR]))
+    return node
 
 
 class TimelineEngine:
@@ -66,6 +92,8 @@ class TimelineEngine:
         self._unsub_state: CALLBACK_TYPE | None = None
         self._last: dict[str, tuple[str, dict[str, Any]]] = {}
         self._contexts: dict[str, str] = {}
+        self._own_contexts: dict[str, deque[str]] = {}
+        self._overrides: dict[str, ManualOverride] = {}
         self._day = None
         self._solar_key = None
         self._solar_events: dict[str, int | None] = {}
@@ -96,12 +124,14 @@ class TimelineEngine:
     async def async_update_schedules(self, schedules: dict[str, dict]) -> None:
         """Replace all timelines, persist and re-apply."""
         self.schedules = schedules
+        self._overrides.clear()
         await self._async_save()
         self.async_start()
 
     async def async_set_enabled(self, enabled: bool) -> None:
         """Globally enable or pause the timeline."""
         self.enabled = enabled
+        self._overrides.clear()
         await self._async_save()
         self.async_start()
 
@@ -142,6 +172,15 @@ class TimelineEngine:
         delay = min(float(self.entry.options.get(CONF_INTERVAL, DEFAULT_INTERVAL)), 86400 - sec + 0.05)
         for nodes in active.values():
             delay = min(delay, seconds_to_next_node(nodes, sec) + 0.05)
+        timestamp = dt_util.now().timestamp()
+        for entity_id, override in list(self._overrides.items()):
+            if override.started is not None or override.deadline <= timestamp:
+                if entity_id not in active:
+                    self._overrides.pop(entity_id)
+                else:
+                    delay = min(delay, 1)
+            else:
+                delay = min(delay, max(0.5, override.deadline - timestamp + 0.05))
         delay = max(delay, 0.5)
 
         if self.enabled:
@@ -151,37 +190,85 @@ class TimelineEngine:
 
     @callback
     def _async_state_changed(self, event: Event[EventStateChangedData]) -> None:
-        """Apply the timeline right away when a light is turned on by someone else."""
+        """Hold externally changed light states until the next scheduled node."""
         entity_id = event.data["entity_id"]
         old, new = event.data["old_state"], event.data["new_state"]
         if (
             not self.enabled
+            or old is None
             or new is None
-            or new.state != STATE_ON
-            or (old is not None and old.state == STATE_ON)
-            or new.context.id == self._contexts.get(entity_id)
+            or old.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+            or new.state not in (STATE_ON, STATE_OFF)
         ):
             return
-        if nodes := self._active().get(entity_id):
+        contexts = self._own_contexts.get(entity_id, ())
+        if new.context.id in contexts or new.context.parent_id in contexts:
+            return
+        properties = (ATTR_BRIGHTNESS, ATTR_COLOR_TEMP_KELVIN, ATTR_RGB_COLOR, "hs_color", "xy_color", "color_mode")
+        if old.state == new.state and all(old.attributes.get(key) == new.attributes.get(key) for key in properties):
+            return
+        if override := self._next_event(entity_id, dt_util.now()):
+            self._overrides[entity_id] = override
             self._last.pop(entity_id, None)
-            self._async_apply(entity_id, nodes, _seconds_of_day(), 0)
+
+    def _next_event(self, entity_id: str, now: datetime) -> ManualOverride | None:
+        schedule = self.schedules.get(entity_id)
+        if not schedule or not schedule.get("enabled", True) or entity_id not in self.lights:
+            return None
+        for offset in range(8):
+            day = now.date() + timedelta(days=offset)
+            nodes = resolve_nodes(schedule, solar_events(self.hass, day), day.weekday())
+            for index, node in enumerate(nodes):
+                instant = now.replace(year=day.year, month=day.month, day=day.day, hour=node["t"] // 3600, minute=node["t"] % 3600 // 60, second=node["t"] % 60, microsecond=0)
+                if instant.timestamp() > now.timestamp():
+                    predecessor = nodes[index - 1]
+                    return ManualOverride(instant.timestamp(), node, predecessor.get("ease", "linear"), predecessor.get("curve", "linear"))
+        return None
 
     @callback
     def _async_apply(
         self, entity_id: str, nodes: list[Node], sec: float, lookahead: float
     ) -> None:
         state = self.hass.states.get(entity_id)
-        if state is None or state.state == STATE_UNAVAILABLE:
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
         if self.entry.options.get(CONF_ONLY_WHEN_ON) and state.state != STATE_ON:
             return
 
-        target, transition = plan(
-            nodes,
-            sec,
-            lookahead,
-            self.schedules[entity_id].get("fade_to_warm", False),
-        )
+        override = self._overrides.get(entity_id)
+        now = dt_util.now().timestamp()
+        if override and override.following is not None and now >= override.following:
+            self._overrides.pop(entity_id)
+            override = None
+        if override and now < override.deadline:
+            return
+        if override and override.started is None:
+            goal = target_at([override.destination], 0, self.schedules[entity_id].get("fade_to_warm", False))
+            start = {**_state_node(state), "ease": override.ease, "curve": override.curve}
+            end = {"t": DEFAULT_RESUME_TRANSITION, "b": goal.brightness, "mode": "none"}
+            if goal.kelvin is not None:
+                end.update(mode="ct", k=goal.kelvin)
+            elif goal.rgb is not None:
+                end.update(mode="rgb", rgb=list(goal.rgb))
+            if start["mode"] == "none":
+                start.update({key: value for key, value in end.items() if key in ("mode", "k", "rgb")})
+            override.nodes = [start, end]
+            override.started = now
+            if following := self._next_event(entity_id, dt_util.now()):
+                override.following = following.deadline
+        if override and override.nodes is not None and override.started is not None:
+            elapsed = now - override.started
+            if elapsed < DEFAULT_RESUME_TRANSITION:
+                transition = min(1.0, DEFAULT_RESUME_TRANSITION - elapsed)
+                if override.following is not None:
+                    transition = min(transition, max(0, override.following - now))
+                target = target_at(override.nodes, min(DEFAULT_RESUME_TRANSITION, elapsed + transition))
+            else:
+                self._overrides.pop(entity_id)
+                target = target_at(override.nodes, DEFAULT_RESUME_TRANSITION)
+                transition = 0
+        else:
+            target, transition = plan(nodes, sec, lookahead, self.schedules[entity_id].get("fade_to_warm", False))
         data: dict[str, Any] = {}
         if target.brightness < 0.5:
             service = SERVICE_TURN_OFF
@@ -202,13 +289,13 @@ class TimelineEngine:
             elif target.rgb and color_supported(modes):
                 data[ATTR_RGB_COLOR] = target.rgb
 
-        # Only send when the target changed, so manual tweaks survive flat sections.
         if self._last.get(entity_id) == (service, data):
             return
         self._last[entity_id] = (service, data)
 
         context = Context()
         self._contexts[entity_id] = context.id
+        self._own_contexts.setdefault(entity_id, deque(maxlen=256)).append(context.id)
         call = {ATTR_ENTITY_ID: entity_id, **data}
         if transition > 0:
             call[ATTR_TRANSITION] = round(transition, 1)

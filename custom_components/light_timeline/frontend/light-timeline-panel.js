@@ -408,7 +408,7 @@ class LightTimelinePanel extends HTMLElement {
               <label>Node <select class="node-picker" aria-label="Select node"></select></label>
               <label><input type="checkbox" class="enabled"> Enabled</label>
               <label title="Automatically ties color temperature to brightness to mimic incandescent dimming: 1000 K at 0% brightness, 2700 K at 100%; overrides node colors"><input type="checkbox" class="fade-to-warm"> Fade to warm</label>
-              <select class="copy"><option value="">Copy timeline to…</option><option value="*">All other lights</option>${others}</select>
+              <select class="copy"><option value="">Copy</option><option value="*">All other lights</option>${others}</select>
               <button class="clear">Clear</button>
             </div>
           </div>
