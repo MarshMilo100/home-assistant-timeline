@@ -368,9 +368,9 @@ class LightTimelinePanel extends HTMLElement {
     }
   }
 
-  _nodeTime(node) {
+  _nodeTime(node, day = this._day()) {
     if (!node.anchor || node.anchor === "time") return node.t;
-    const event = this._day().events[node.anchor];
+    const event = day.events[node.anchor];
     return event == null ? null : mod(event + (node.offset || 0), DAY);
   }
 
@@ -382,9 +382,39 @@ class LightTimelinePanel extends HTMLElement {
     for (const node of schedule.nodes) {
       const time = this._nodeTime(node);
       if (time == null || !node.days.includes(weekday)) continue;
-      resolved.set(time, { ...node, t: time, source: node });
+      const selected = this._selected?.row === row ? this._selected.node : null;
+      if (resolved.get(time)?.source !== selected) {
+        resolved.set(time, { ...node, t: time, source: node });
+      }
     }
     return [...resolved.values()].sort((left, right) => left.t - right.t);
+  }
+
+  _removeDuplicateTimes(row, keep) {
+    const nodes = this._schedules[row.eid].nodes;
+    if (!keep || !nodes.includes(keep)) return false;
+    let changed = false;
+    const calendar = this._calendar.length ? this._calendar : [this._day()];
+    for (let index = nodes.length - 1; index >= 0; index--) {
+      const node = nodes[index];
+      if (node === keep) continue;
+      const matchingAnchor = node.anchor === keep.anchor &&
+        (node.anchor === "time" ? node.t === keep.t : node.offset === keep.offset);
+      const days = node.days.filter((weekday) => {
+        if (!keep.days.includes(weekday)) return true;
+        if (matchingAnchor) return false;
+        return !calendar.some((day) => {
+          if (day.weekday !== weekday) return false;
+          const time = this._nodeTime(keep, day);
+          return time != null && time === this._nodeTime(node, day);
+        });
+      });
+      if (days.length === node.days.length) continue;
+      changed = true;
+      if (days.length) node.days = days;
+      else nodes.splice(index, 1);
+    }
+    return changed;
   }
 
   _snapPoint(row, time, freeform = false) {
@@ -715,7 +745,13 @@ class LightTimelinePanel extends HTMLElement {
   _onUp() {
     const d = this._drag;
     this._drag = null;
-    if (d && (d.moved || d.created)) this._changed(d.row);
+    if (d) {
+      const deduplicated = this._removeDuplicateTimes(d.row, d.node);
+      if (d.moved || d.created || deduplicated) {
+        this._drawGraph(d.row);
+        this._changed(d.row);
+      }
+    }
   }
 
   _select(row, node) {
@@ -727,8 +763,13 @@ class LightTimelinePanel extends HTMLElement {
       this._drawGraph(prev);
     }
     if (row) {
+      const deduplicated = !this._drag && this._removeDuplicateTimes(row, node);
       row.nodePicker.value = this._schedules[row.eid].nodes.indexOf(node);
       this._renderEditor(row);
+      if (deduplicated) {
+        this._drawGraph(row);
+        this._changed(row);
+      }
       const nodes = this._schedules[row.eid].nodes;
       for (const circle of row.svg.querySelectorAll(".node")) {
         circle.classList.toggle("selected", nodes[+circle.dataset.i] === node);
@@ -913,6 +954,8 @@ class LightTimelinePanel extends HTMLElement {
   }
 
   _changed(row, record = true) {
+    const selected = this._selected?.row === row ? this._selected.node : null;
+    if (this._removeDuplicateTimes(row, selected)) this._drawGraph(row);
     this._renderSummary(row);
     if (record) this._recordHistory();
     this._scheduleSave();
