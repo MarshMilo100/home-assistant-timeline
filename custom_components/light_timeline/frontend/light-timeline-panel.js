@@ -158,6 +158,7 @@ const STYLE = `
   .history:disabled { opacity: 0.35; cursor: default; }
   .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px 16px; }
   .controls label { display: flex; gap: 8px; align-items: center; }
+  .controls .timeline-layout { flex-basis: 100%; }
   .controls .pan { flex: 1; min-width: 200px; }
   .controls .pan input { flex: 1; }
   .tz { color: var(--secondary-text-color); font-size: 13px; }
@@ -214,6 +215,7 @@ class LightTimelinePanel extends HTMLElement {
     this._historyIndex = -1;
     this._calendar = [];
     this._previewIndex = 0;
+    this._allTimelinesOpen = true;
   }
 
   set hass(hass) {
@@ -274,6 +276,7 @@ class LightTimelinePanel extends HTMLElement {
         <label>Time snap <select class="snap">${SNAPS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
         <label>Brightness snap <select class="brightness-snap">${BRIGHTNESS_SNAPS.map((value) => `<option value="${value}">${value}%</option>`).join("")}</select></label>
         <span class="tz"></span>
+        <label class="timeline-layout"><input class="all-timelines-open" type="checkbox" checked>Show multiple timelines</label>
       </div>
       <div class="rows"></div>`;
     this._menu = root.querySelector("ha-menu-button");
@@ -286,6 +289,9 @@ class LightTimelinePanel extends HTMLElement {
     this._redo.addEventListener("click", () => this._restoreHistory(1));
     this._zoom = root.querySelector(".zoom");
     this._pan = root.querySelector(".pan-input");
+    root.querySelector(".all-timelines-open").addEventListener("change", (event) => {
+      this._setTimelineLayout(event.target.checked);
+    });
     this._previewDay = root.querySelector(".preview-day");
     this._previewDay.addEventListener("change", () => {
       this._onUp();
@@ -319,6 +325,7 @@ class LightTimelinePanel extends HTMLElement {
       this._schedules = data.schedules;
       this._setCalendar(data.calendar || []);
       this._buildRows(root.querySelector(".rows"), data.lights);
+      if (this._allTimelinesOpen) this._setTimelineLayout(true);
       this._recordHistory();
     } catch (err) {
       this._status.textContent = `Failed to load: ${err.message}`;
@@ -343,6 +350,20 @@ class LightTimelinePanel extends HTMLElement {
 
   _name(entityId) {
     return this._hass.states[entityId]?.attributes.friendly_name || entityId;
+  }
+
+  _setTimelineLayout(allOpen) {
+    this._onUp();
+    this._allTimelinesOpen = allOpen;
+    const rows = Object.values(this._rows);
+    const selected = this._selected?.row;
+    const keep = selected?.details.open ? selected : rows.find((row) => row.details.open) || rows[0];
+    for (const row of rows) row.details.removeAttribute("name");
+    for (const row of rows) {
+      row.details.open = allOpen || row === keep;
+      if (!allOpen) row.details.setAttribute("name", "light-timeline");
+    }
+    this._drawAll();
   }
 
   _temperatureRange(row) {
