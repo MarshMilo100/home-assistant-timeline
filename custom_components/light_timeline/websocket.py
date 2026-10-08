@@ -30,6 +30,8 @@ NODE_SCHEMA = vol.Schema(
             [vol.All(vol.Coerce(int), vol.Range(0, 255))], vol.Length(3, 3)
         ),
         vol.Optional("ease", default="linear"): vol.In(list(EASINGS)),
+        vol.Optional("ease_in"): vol.In(["inherit", *EASINGS]),
+        vol.Optional("ease_out"): vol.In(list(EASINGS)),
         vol.Optional("curve", default="linear"): vol.In(list(CURVES)),
     }
 )

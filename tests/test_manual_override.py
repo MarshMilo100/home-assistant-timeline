@@ -184,3 +184,32 @@ class ManualOverrideTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(previous.id, current.id)
         self.change(self.make_state(100), self.make_state(130, context=previous))
         self.assertFalse(self.engine._overrides)
+
+    async def test_explicit_destination_ease_in_controls_manual_recovery(self):
+        self.schedule["nodes"][0].update(ease_out="step", curve="linear")
+        self.schedule["nodes"][1].update(ease_in="ease_in", ease_out="ease_out")
+        self.change(self.make_state(255), self.make_state(0, "off"))
+        override = self.engine._overrides["light.demo"]
+        self.assertEqual(override.ease, "ease_in")
+        await self.apply()
+        self.hass.services.async_call.assert_not_called()
+        self.now += timedelta(seconds=60)
+        await self.apply()
+        self.now += timedelta(seconds=29)
+        await self.apply()
+        data = self.hass.services.async_call.call_args.args[2]
+        self.assertEqual(data["brightness"], 64)
+        self.assertAlmostEqual(data["color_temp_kelvin"], 2479, delta=1)
+
+    async def test_explicit_destination_step_controls_manual_recovery(self):
+        self.schedule["nodes"][0]["ease_out"] = "linear"
+        self.schedule["nodes"][1]["ease_in"] = "step"
+        self.change(self.make_state(255), self.make_state(0, "off"))
+        self.now += timedelta(seconds=60)
+        await self.apply()
+        self.now += timedelta(seconds=30)
+        await self.apply()
+        self.assertEqual(self.hass.services.async_call.call_args.args[1], "turn_off")
+        self.now += timedelta(seconds=30)
+        await self.apply()
+        self.assertEqual(self.hass.services.async_call.call_args.args[1], "turn_on")

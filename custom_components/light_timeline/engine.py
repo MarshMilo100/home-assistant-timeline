@@ -45,7 +45,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.color import color_temperature_to_rgb
 
 from .const import CONF_INTERVAL, CONF_LIGHTS, CONF_ONLY_WHEN_ON, DEFAULT_INTERVAL, DEFAULT_RESUME_TRANSITION
-from .interpolation import Node, plan, seconds_to_next_node, target_at
+from .interpolation import Node, plan, seconds_to_next_node, segment_easings, target_at
 from .scheduling import resolve_nodes, solar_events
 
 
@@ -222,7 +222,8 @@ class TimelineEngine:
                 instant = now.replace(year=day.year, month=day.month, day=day.day, hour=node["t"] // 3600, minute=node["t"] % 3600 // 60, second=node["t"] % 60, microsecond=0)
                 if instant.timestamp() > now.timestamp():
                     predecessor = nodes[index - 1]
-                    return ManualOverride(instant.timestamp(), node, predecessor.get("ease", "linear"), predecessor.get("curve", "linear"))
+                    incoming = segment_easings(predecessor, node)[1]
+                    return ManualOverride(instant.timestamp(), node, incoming, predecessor.get("curve", "linear"))
         return None
 
     @callback

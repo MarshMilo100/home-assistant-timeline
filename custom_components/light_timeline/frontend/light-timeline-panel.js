@@ -51,6 +51,7 @@ const CURVE_LABELS = {
   log: "Logarithmic",
 };
 const MODE_LABELS = { none: "Unchanged", ct: "Color temperature", rgb: "RGB color" };
+const EASE_IN_LABELS = { inherit: "Same as outgoing", ...EASE_LABELS };
 
 const ZOOMS = [
   [86400, "24 h"], [43200, "12 h"], [21600, "6 h"], [10800, "3 h"], [3600, "1 h"],
@@ -104,9 +105,19 @@ function segment(nodes, t) {
 
 const warmKelvin = (brightness) => Math.round(1000 + 17 * brightness);
 
+function easedProgress(start, end, progress) {
+  const outgoing = start.ease_out ?? start.ease ?? "linear";
+  const incoming = !end.ease_in || end.ease_in === "inherit" ? outgoing : end.ease_in;
+  if (outgoing === "step" || incoming === "step") return 0;
+  const first = (EASE[outgoing] || EASE.linear)(progress);
+  if (incoming === outgoing) return first;
+  const last = (EASE[incoming] || EASE.linear)(progress);
+  return (1 - progress) * first + progress * last;
+}
+
 function sample(nodes, t, fadeToWarm = false, temperatureRange = [1000, 12000]) {
   const [a, b, x] = segment(nodes, t);
-  const e = (EASE[a.ease] || EASE.linear)(x);
+  const e = easedProgress(a, b, x);
   const [curve, inv] = CURVE[a.curve] || CURVE.linear;
   const p0 = inv(a.b / 100), p1 = inv(b.b / 100);
   const bri = curve(p0 + (p1 - p0) * e) * 100;
@@ -701,7 +712,7 @@ class LightTimelinePanel extends HTMLElement {
     const base = nodes.length
       ? segment(nodes, t)[0]
       : { mode: "none", k: 2700, rgb: [255, 255, 255], ease: "linear", curve: "linear" };
-    return { t, b, anchor: "time", offset: 0, days: [...ALL_DAYS], mode: base.mode, k: base.k, rgb: [...base.rgb], ease: base.ease, curve: base.curve };
+    return { t, b, anchor: "time", offset: 0, days: [...ALL_DAYS], mode: base.mode, k: base.k, rgb: [...base.rgb], ease: base.ease, ease_in: base.ease_in ?? "inherit", ease_out: base.ease_out ?? base.ease ?? "linear", curve: base.curve };
   }
 
   _onDown(row, ev) {
@@ -824,7 +835,8 @@ class LightTimelinePanel extends HTMLElement {
       <label>Color<select name="mode">${options(MODE_LABELS)}</select></label>
       ${mode === "ct" ? `<label>Color temperature (<span class="kval"></span> K)<input name="k" type="range" min="${kMin}" max="${kMax}" step="1" style="background:${kGradient}"></label>` : ""}
       ${mode === "rgb" ? `<label>RGB color<input name="rgb" type="color"></label>` : ""}
-      <label>Easing to next node<select name="ease">${options(EASE_LABELS)}</select></label>
+      <label>Easing in<select name="ease_in" title="Incoming curve for this node, including recovery from a manual light state">${options(EASE_IN_LABELS)}</select></label>
+      <label>Easing out<select name="ease_out" title="Outgoing curve from this node toward the next node">${options(EASE_LABELS)}</select></label>
       <label>Dimmer curve<select name="curve">${options(CURVE_LABELS)}</select></label>
       ${dayInputs("node-days")}
       <button class="delete">Delete node</button>`;
@@ -869,7 +881,8 @@ class LightTimelinePanel extends HTMLElement {
     set("mode", fadeToWarm ? "ct" : node.mode);
     set("k", kelvin);
     set("rgb", hex(node.rgb));
-    set("ease", node.ease);
+    set("ease_in", node.ease_in ?? "inherit");
+    set("ease_out", node.ease_out ?? node.ease ?? "linear");
     set("curve", node.curve);
     for (const name of ["mode", "k", "rgb"]) {
       const el = row.editor.querySelector(`[name="${name}"]`);

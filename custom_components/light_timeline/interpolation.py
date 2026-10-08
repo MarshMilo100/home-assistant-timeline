@@ -80,10 +80,27 @@ def _as_rgb(color: tuple[str, Any]) -> tuple[float, float, float]:
     return color[1] if color[0] == "rgb" else color_temperature_to_rgb(color[1])
 
 
+def segment_easings(start: Node, end: Node) -> tuple[str, str]:
+    outgoing = start.get("ease_out", start.get("ease", "linear"))
+    incoming = end.get("ease_in", "inherit")
+    return outgoing, outgoing if incoming == "inherit" else incoming
+
+
+def eased_progress(start: Node, end: Node, progress: float) -> float:
+    outgoing, incoming = segment_easings(start, end)
+    if "step" in (outgoing, incoming):
+        return 0.0
+    first = EASINGS[outgoing](progress)
+    if incoming == outgoing:
+        return first
+    last = EASINGS[incoming](progress)
+    return (1 - progress) * first + progress * last
+
+
 def target_at(nodes: list[Node], t: float, fade_to_warm: bool = False) -> Target:
     """Interpolate the target state at seconds-of-day t (nodes sorted, non-empty)."""
     a, b, x = _segment(nodes, t)
-    e = EASINGS.get(a.get("ease"), EASINGS["linear"])(x)
+    e = eased_progress(a, b, x)
     curve, inverse = CURVES.get(a.get("curve"), CURVES["linear"])
     p0, p1 = inverse(a["b"] / 100), inverse(b["b"] / 100)
     target = Target(curve(p0 + (p1 - p0) * e) * 100)
@@ -109,8 +126,8 @@ def plan(
     nodes: list[Node], t: float, lookahead: float, fade_to_warm: bool = False
 ) -> tuple[Target, float]:
     """Return the state to send now and its transition time in seconds."""
-    start, _, _ = _segment(nodes, t)
-    if lookahead <= 0 or start.get("ease") == "step":
+    start, end, _ = _segment(nodes, t)
+    if lookahead <= 0 or "step" in segment_easings(start, end):
         return target_at(nodes, t, fade_to_warm), 0.0
     return target_at(nodes, (t + lookahead) % DAY, fade_to_warm), lookahead
 
